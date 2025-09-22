@@ -1,6 +1,6 @@
 {
   "name": "jmeter-performance-test-runner",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "description": "Electron GUI for running JMeter tests with customizable parameters and progress tracking",
   "main": "src/main.js",
   "scripts": {
