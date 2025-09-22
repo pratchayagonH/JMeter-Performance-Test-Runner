@@ -1,0 +1,19 @@
+{
+  "name": "jmeter-performance-test-runner",
+  "version": "0.1.0",
+  "description": "Electron GUI for running JMeter tests with customizable parameters and progress tracking",
+  "main": "src/main.js",
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron . --dev"
+  },
+  "keywords": ["electron", "jmeter", "performance", "testing", "gui"],
+  "author": "Your Name",
+  "license": "MIT",
+  "devDependencies": {
+    "electron": "^25.0.0"
+  },
+  "dependencies": {
+    "electron-store": "^8.1.0"
+  }
+}

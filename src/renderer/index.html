@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>JMeter Runner</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div class="container">
+        <!-- Header -->
+        <header class="header">
+            <h1>🚀 JMeter Performance Test Runner</h1>
+            <p>Select JMeter executable, configure test files, and run performance tests with real-time monitoring</p>
+        </header>
+
+        <!-- Configuration Section -->
+        <section class="config-section">
+            <div class="config-row">
+                <div class="config-item">
+                    <label for="jmeter-path">JMeter Executable:</label>
+                    <div class="input-group">
+                        <input type="text" id="jmeter-path" placeholder="Select JMeter executable..." readonly>
+                        <button id="browse-jmeter" class="btn btn-secondary">Browse</button>
+                    </div>
+                </div>
+                
+                <div class="config-item">
+                    <label for="export-path">Export Directory:</label>
+                    <div class="input-group">
+                        <input type="text" id="export-path" placeholder="Select export directory..." readonly>
+                        <button id="browse-export" class="btn btn-secondary">Browse</button>
+                    </div>
+                </div>
+            </div>
+
+            <div class="config-row">
+                <button id="select-jmx" class="btn btn-primary">📁 Select JMX Test Files</button>
+                <div class="file-count">
+                    <span id="file-count-text">No files selected</span>
+                </div>
+            </div>
+        </section>
+
+        <!-- Test Files Table -->
+        <section class="files-section">
+            <div class="files-header">
+                <h3>Test Files Configuration</h3>
+                <div class="files-info">
+                    <span id="total-runs">Total Runs: 0</span>
+                </div>
+            </div>
+            
+            <div class="table-container">
+                <table id="files-table" class="files-table">
+                    <thead>
+                        <tr>
+                            <th>File</th>
+                            <th>Threads</th>
+                            <th>Ramp-up (s)</th>
+                            <th>Loops</th>
+                            <th>Rounds</th>
+                            <th>Progress</th>
+                            <th>Status</th>
+                        </tr>
+                    </thead>
+                    <tbody id="files-table-body">
+                        <!-- Dynamically populated -->
+                    </tbody>
+                </table>
+            </div>
+        </section>
+
+        <!-- Control Buttons -->
+        <section class="controls-section">
+            <div class="controls">
+                <button id="run-tests" class="btn btn-success" disabled>
+                    ▶️ Run Tests
+                </button>
+                <button id="cancel-tests" class="btn btn-danger" disabled>
+                    ⏹️ Cancel
+                </button>
+                <button id="clear-logs" class="btn btn-secondary">
+                    🗑️ Clear Logs
+                </button>
+            </div>
+        </section>
+
+        <!-- Progress Section -->
+        <section class="progress-section">
+            <div class="progress-header">
+                <h3>Overall Progress</h3>
+                <span id="progress-text">Ready to start</span>
+            </div>
+            <div class="progress-bar-container">
+                <div id="overall-progress" class="progress-bar">
+                    <div class="progress-fill"></div>
+                </div>
+                <span id="progress-percentage">0%</span>
+            </div>
+        </section>
+
+        <!-- Log Output -->
+        <section class="log-section">
+            <div class="log-header">
+                <h3>Execution Logs</h3>
+                <div class="log-controls">
+                    <label>
+                        <input type="checkbox" id="auto-scroll" checked>
+                        Auto-scroll
+                    </label>
+                    <button id="export-logs" class="btn btn-sm">Export Logs</button>
+                </div>
+            </div>
+            <div id="log-container" class="log-container">
+                <div id="log-output" class="log-output">
+                    <div class="log-entry info">
+                        <span class="timestamp">[Ready]</span>
+                        <span class="message">JMeter Runner initialized. Select JMeter executable and test files to begin.</span>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Error/Status Messages -->
+        <div id="status-messages" class="status-messages"></div>
+    </div>
+
+    <!-- Loading Overlay -->
+    <div id="loading-overlay" class="loading-overlay hidden">
+        <div class="loading-spinner">
+            <div class="spinner"></div>
+            <p>Loading...</p>
+        </div>
+    </div>
+
+    <script src="renderer.js"></script>
+</body>
+</html>
