@@ -1,0 +1,48 @@
+<svg width="540" height="380" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" style="stop-color:#ffffff;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#f8f9fa;stop-opacity:1" />
+    </linearGradient>
+  </defs>
+  
+  <!-- Background with subtle gradient -->
+  <rect width="540" height="380" fill="url(#bg)" stroke="#dee2e6" stroke-width="1"/>
+  
+  <!-- Header area -->
+  <rect x="0" y="0" width="540" height="60" fill="#ffffff"/>
+  <line x1="0" y1="60" x2="540" y2="60" stroke="#e9ecef" stroke-width="1"/>
+  
+  <!-- Title text -->
+  <text x="270" y="35" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, Helvetica, Arial, sans-serif" font-size="22" font-weight="600" fill="#495057">JMeter Performance Test Runner</text>
+  
+  <!-- Drag zones - positioned exactly as in package.json -->
+  <circle cx="110" cy="280" r="38" fill="none" stroke="#ced4da" stroke-width="2" stroke-dasharray="8,4" opacity="0.8"/>
+  <circle cx="380" cy="280" r="38" fill="none" stroke="#ced4da" stroke-width="2" stroke-dasharray="8,4" opacity="0.8"/>
+  
+  <!-- Arrow between zones -->
+  <line x1="160" y1="280" x2="330" y2="280" stroke="#adb5bd" stroke-width="2" opacity="0.7"/>
+  <polygon points="330,280 322,275 322,285" fill="#adb5bd" opacity="0.7"/>
+  
+  <!-- Instruction text -->
+  <text x="270" y="345" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, Helvetica, Arial, sans-serif" font-size="13" fill="#6c757d">Drag application to Applications folder to install</text>
+  
+  <!-- Subtle decorative elements -->
+  <g opacity="0.4">
+    <circle cx="50" cy="120" r="2" fill="#e9ecef"/>
+    <circle cx="150" cy="120" r="2" fill="#e9ecef"/>
+    <circle cx="250" cy="120" r="2" fill="#e9ecef"/>
+    <circle cx="350" cy="120" r="2" fill="#e9ecef"/>
+    <circle cx="450" cy="120" r="2" fill="#e9ecef"/>
+    <circle cx="100" cy="180" r="2" fill="#e9ecef"/>
+    <circle cx="200" cy="180" r="2" fill="#e9ecef"/>
+    <circle cx="300" cy="180" r="2" fill="#e9ecef"/>
+    <circle cx="400" cy="180" r="2" fill="#e9ecef"/>
+  </g>
+  
+  <!-- Performance-themed subtle icon in background -->
+  <g transform="translate(460, 90)" opacity="0.15">
+    <circle cx="10" cy="10" r="8" fill="none" stroke="#495057" stroke-width="1"/>
+    <path d="M 6 10 L 10 6 L 14 10 L 10 14 Z" fill="#495057"/>
+  </g>
+</svg>
