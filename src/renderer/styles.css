@@ -656,3 +656,33 @@ input[type="text"]:read-only {
     width: 60px;
   }
 }
+
+/* Remove file button styles */
+.remove-file-btn {
+  background: #ff4444;
+  color: white;
+  border: none;
+  border-radius: 3px;
+  padding: 4px 8px;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: bold;
+  transition: background-color 0.2s;
+}
+
+.remove-file-btn:hover:not(:disabled) {
+  background: #cc0000;
+}
+
+.remove-file-btn:disabled {
+  background: #cccccc;
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+/* Update the table to accommodate the new column */
+.files-table th:last-child,
+.files-table td:last-child {
+  width: 60px;
+  text-align: center;
+}

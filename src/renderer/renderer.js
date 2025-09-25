@@ -143,7 +143,15 @@ async function selectJMXFiles() {
   try {
     const result = await window.api.selectJMXs();
     if (result.success && result.files) {
-      selectedFiles = result.files.map(file => ({
+      // Stack new files with existing ones (avoid duplicates)
+      const newFiles = result.files.filter(newFile => 
+        !selectedFiles.some(existingFile => existingFile.path === newFile.path)
+      );
+      
+      const duplicateCount = result.files.length - newFiles.length;
+      
+      // Add new files to existing selection
+      const filesToAdd = newFiles.map(file => ({
         ...file,
         thread: 1,    // Default values
         rampup: 1,
@@ -153,10 +161,18 @@ async function selectJMXFiles() {
         status: 'ready'
       }));
       
+      selectedFiles.push(...filesToAdd);
+      
       updateFilesTable();
       updateUI();
       
-      addLogEntry(`Selected ${selectedFiles.length} test file(s)`, 'success');
+      if (newFiles.length > 0) {
+        addLogEntry(`Added ${newFiles.length} new test file(s). Total: ${selectedFiles.length}`, 'success');
+      }
+      
+      if (duplicateCount > 0) {
+        addLogEntry(`Skipped ${duplicateCount} duplicate file(s)`, 'warning');
+      }
       
       if (result.errors && result.errors.length > 0) {
         result.errors.forEach(error => {
@@ -195,6 +211,11 @@ function updateFilesTable() {
         </div>
       </td>
       <td><span class="file-status" data-file="${index}">${file.status}</span></td>
+      <td>
+        <button class="remove-file-btn" data-file="${index}" title="Remove file" ${isRunning ? 'disabled' : ''}>
+          ✕
+        </button>
+      </td>
     `;
     tbody.appendChild(row);
   });
@@ -204,7 +225,37 @@ function updateFilesTable() {
     input.addEventListener('change', updateFileParameter);
   });
   
+  // Add event listeners for remove buttons
+  tbody.querySelectorAll('.remove-file-btn').forEach(button => {
+    button.addEventListener('click', removeFile);
+  });
+  
   updateTotalRuns();
+}
+
+// Remove a file from the selected files list
+function removeFile(event) {
+  if (isRunning) {
+    showStatusMessage('Cannot remove files while tests are running', 'warning');
+    return;
+  }
+
+  const fileIndex = parseInt(event.target.dataset.file);
+  const fileName = selectedFiles[fileIndex].name;
+  
+  // Remove the file from the array
+  selectedFiles.splice(fileIndex, 1);
+  
+  // Update the UI
+  updateFilesTable();
+  updateUI();
+  
+  addLogEntry(`Removed file: ${fileName}`, 'info');
+  
+  // Show message if no files left
+  if (selectedFiles.length === 0) {
+    showStatusMessage('No test files selected', 'info');
+  }
 }
 
 // Update file parameter when input changes
