@@ -23,8 +23,7 @@ const elements = {
   logContainer: document.getElementById('log-container'),
   autoScroll: document.getElementById('auto-scroll'),
   exportLogs: document.getElementById('export-logs'),
-  statusMessages: document.getElementById('status-messages'),
-  loadingOverlay: document.getElementById('loading-overlay')
+  statusMessages: document.getElementById('status-messages')
 };
 
 // Initialize the application
@@ -99,7 +98,6 @@ function setupIpcListeners() {
 
 // Select JMeter executable
 async function selectJMeterExecutable() {
-  showLoading();
   try {
     const result = await window.api.selectJMeter();
     if (result.success && result.path) {
@@ -112,14 +110,11 @@ async function selectJMeterExecutable() {
     }
   } catch (error) {
     showStatusMessage(`Failed to select JMeter: ${error.message}`, 'error');
-  } finally {
-    hideLoading();
   }
 }
 
 // Select export directory
 async function selectExportDirectory() {
-  showLoading();
   try {
     const result = await window.api.selectExportDir();
     if (result.success && result.path) {
@@ -132,14 +127,11 @@ async function selectExportDirectory() {
     }
   } catch (error) {
     showStatusMessage(`Failed to select export directory: ${error.message}`, 'error');
-  } finally {
-    hideLoading();
   }
 }
 
 // Select JMX test files
 async function selectJMXFiles() {
-  showLoading();
   try {
     const result = await window.api.selectJMXs();
     if (result.success && result.files) {
@@ -184,8 +176,6 @@ async function selectJMXFiles() {
     }
   } catch (error) {
     showStatusMessage(`Failed to select files: ${error.message}`, 'error');
-  } finally {
-    hideLoading();
   }
 }
 
@@ -300,7 +290,6 @@ function updateUI() {
 async function runTests() {
   if (isRunning) return;
   
-  showLoading();
   isRunning = true;
   updateUI();
   
@@ -331,8 +320,6 @@ async function runTests() {
     showStatusMessage(`Failed to start tests: ${error.message}`, 'error');
     isRunning = false;
     updateUI();
-  } finally {
-    hideLoading();
   }
 }
 
@@ -501,16 +488,6 @@ function showStatusMessage(message, type = 'info') {
       messageEl.parentNode.removeChild(messageEl);
     }
   }, 5000);
-}
-
-// Show loading overlay
-function showLoading() {
-  elements.loadingOverlay.classList.remove('hidden');
-}
-
-// Hide loading overlay
-function hideLoading() {
-  elements.loadingOverlay.classList.add('hidden');
 }
 
 // Escape HTML to prevent XSS
