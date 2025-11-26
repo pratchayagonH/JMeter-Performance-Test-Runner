@@ -2,6 +2,23 @@
 let selectedFiles = [];
 let currentSettings = {};
 let isRunning = false;
+const REPORT_SELECTION_DEFAULT = 'bi';
+const REPORT_TYPE_LABELS = {
+  b: 'Best',
+  w: 'Worst',
+  bi: 'Best Individual',
+  wi: 'Worst Individual'
+};
+const TARGET_PRESETS = {
+  '1tps': { label: '1 TPS', thread: 1, rampup: 1, loop: 50, threshold: 1000 },
+  '30tps': { label: '30 TPS', thread: 30, rampup: 1, loop: 120, threshold: 3000 }
+};
+const TARGET_OPTIONS = {
+  '1tps': { label: TARGET_PRESETS['1tps'].label, sequence: ['1tps'] },
+  '30tps': { label: TARGET_PRESETS['30tps'].label, sequence: ['30tps'] },
+  all: { label: 'All', sequence: ['1tps', '30tps'] }
+};
+const TARGET_DEFAULT = '1tps';
 
 // DOM element references
 const elements = {
@@ -23,8 +40,24 @@ const elements = {
   logContainer: document.getElementById('log-container'),
   autoScroll: document.getElementById('auto-scroll'),
   exportLogs: document.getElementById('export-logs'),
-  statusMessages: document.getElementById('status-messages')
+  statusMessages: document.getElementById('status-messages'),
+  reportTypeGroup: document.getElementById('report-type-group')
 };
+
+function resolveTargetSequence(targetKey) {
+  const option = TARGET_OPTIONS[targetKey];
+  if (option && Array.isArray(option.sequence) && option.sequence.length > 0) {
+    return option.sequence.slice();
+  }
+  return TARGET_OPTIONS[TARGET_DEFAULT].sequence.slice();
+}
+
+function getTargetsForFile(file) {
+  if (file && Array.isArray(file.targetSequence) && file.targetSequence.length > 0) {
+    return file.targetSequence.slice();
+  }
+  return resolveTargetSequence(file?.target || TARGET_DEFAULT);
+}
 
 // Initialize the application
 document.addEventListener('DOMContentLoaded', async () => {
@@ -44,6 +77,8 @@ async function loadSettings() {
       currentSettings = result.settings;
       elements.jmeterPath.value = currentSettings.jmeterPath || '';
       elements.exportPath.value = currentSettings.exportPath || '';
+      currentSettings.reportSelectionMode = currentSettings.reportSelectionMode || REPORT_SELECTION_DEFAULT;
+      updateReportTypeSelection(currentSettings.reportSelectionMode);
     }
   } catch (error) {
     addLogEntry(`Failed to load settings: ${error.message}`, 'error');
@@ -70,6 +105,10 @@ function setupEventListeners() {
     if (elements.autoScroll.checked) {
       scrollToBottom();
     }
+  });
+
+  getReportTypeInputs().forEach((input) => {
+    input.addEventListener('change', handleReportTypeChange);
   });
 }
 
@@ -143,15 +182,18 @@ async function selectJMXFiles() {
       const duplicateCount = result.files.length - newFiles.length;
       
       // Add new files to existing selection
-      const filesToAdd = newFiles.map(file => ({
-        ...file,
-        thread: 1,    // Default values
-        rampup: 1,
-        loop: 50,
-        rounds: 3,
-        progress: 0,
-        status: 'ready'
-      }));
+      const filesToAdd = newFiles.map(file => {
+        const fileConfig = {
+          ...file,
+          target: TARGET_DEFAULT,
+          rounds: 3,
+          progress: 0,
+          status: 'ready',
+          reportEnabled: true
+        };
+        applyTargetPreset(fileConfig, TARGET_DEFAULT);
+        return fileConfig;
+      });
       
       selectedFiles.push(...filesToAdd);
       
@@ -185,19 +227,41 @@ function updateFilesTable() {
   tbody.innerHTML = '';
   
   selectedFiles.forEach((file, index) => {
+    const hasTargetOption = Boolean(TARGET_OPTIONS[file.target]);
+    const targetKey = hasTargetOption ? file.target : TARGET_DEFAULT;
+
+    if (!hasTargetOption || !Array.isArray(file.targetSequence)) {
+      applyTargetPreset(file, targetKey);
+    }
+    const reportEnabled = file.reportEnabled !== false;
+    file.reportEnabled = reportEnabled;
+
+    const targetOptions = Object.entries(TARGET_OPTIONS)
+      .map(([value, option]) => `<option value="${value}" ${value === targetKey ? 'selected' : ''}>${option.label}</option>`)
+      .join('');
+
+    const totalIterations = file.rounds * getTargetsForFile(file).length;
     const row = document.createElement('tr');
     row.innerHTML = `
       <td class="file-name" title="${file.path}">${file.name}</td>
-      <td><input type="number" class="param-input" data-file="${index}" data-param="thread" value="${file.thread}" min="1" max="1000"></td>
-      <td><input type="number" class="param-input" data-file="${index}" data-param="rampup" value="${file.rampup}" min="1" max="3600"></td>
-      <td><input type="number" class="param-input" data-file="${index}" data-param="loop" value="${file.loop}" min="1" max="10000"></td>
-      <td><input type="number" class="param-input" data-file="${index}" data-param="rounds" value="${file.rounds}" min="1" max="10"></td>
+      <td>
+        <select class="target-select" data-file="${index}" ${isRunning ? 'disabled' : ''}>
+          ${targetOptions}
+        </select>
+      </td>
+      <td><input type="number" class="rounds-input" data-file="${index}" value="${file.rounds}" min="1" max="10" ${isRunning ? 'disabled' : ''}></td>
+      <td>
+        <label class="report-toggle" title="Toggle report capture for this file">
+          <input type="checkbox" class="report-checkbox" data-file="${index}" ${reportEnabled ? 'checked' : ''} ${isRunning ? 'disabled' : ''}>
+          <span>${reportEnabled ? 'Enabled' : 'Disabled'}</span>
+        </label>
+      </td>
       <td>
         <div class="file-progress">
           <div class="file-progress-bar">
             <div class="file-progress-fill" data-file="${index}"></div>
           </div>
-          <span class="file-progress-text" data-file="${index}">0/0</span>
+          <span class="file-progress-text" data-file="${index}">0/${totalIterations}</span>
         </div>
       </td>
       <td><span class="file-status" data-file="${index}">${file.status}</span></td>
@@ -210,9 +274,19 @@ function updateFilesTable() {
     tbody.appendChild(row);
   });
   
-  // Add event listeners for parameter inputs
-  tbody.querySelectorAll('.param-input').forEach(input => {
-    input.addEventListener('change', updateFileParameter);
+  // Add event listeners for rounds input
+  tbody.querySelectorAll('.rounds-input').forEach(input => {
+    input.addEventListener('change', updateFileRounds);
+  });
+  
+  // Add event listeners for target dropdown
+  tbody.querySelectorAll('.target-select').forEach(select => {
+    select.addEventListener('change', updateFileTarget);
+  });
+
+  // Add event listeners for report checkbox
+  tbody.querySelectorAll('.report-checkbox').forEach(checkbox => {
+    checkbox.addEventListener('change', updateFileReport);
   });
   
   // Add event listeners for remove buttons
@@ -248,21 +322,41 @@ function removeFile(event) {
   }
 }
 
-// Update file parameter when input changes
-function updateFileParameter(event) {
-  const fileIndex = parseInt(event.target.dataset.file);
-  const paramName = event.target.dataset.param;
-  const value = parseInt(event.target.value);
+// Update file rounds when input changes
+function updateFileRounds(event) {
+  const fileIndex = parseInt(event.target.dataset.file, 10);
+  const value = parseInt(event.target.value, 10);
   
   if (selectedFiles[fileIndex] && value > 0) {
-    selectedFiles[fileIndex][paramName] = value;
+    selectedFiles[fileIndex].rounds = value;
+    const targetCount = getTargetsForFile(selectedFiles[fileIndex]).length;
+    const totalForFile = Math.max(1, value * targetCount);
+    const fileProgressText = document.querySelector(`[data-file="${fileIndex}"].file-progress-text`);
+    const fileProgressFill = document.querySelector(`[data-file="${fileIndex}"].file-progress-fill`);
+    let completedForFile = 0;
+
+    if (fileProgressText) {
+      const [completedPart] = (fileProgressText.textContent || '').split('/');
+      const parsedCompleted = parseInt(completedPart, 10);
+      completedForFile = Number.isFinite(parsedCompleted) ? Math.min(parsedCompleted, totalForFile) : 0;
+      fileProgressText.textContent = `${completedForFile}/${totalForFile}`;
+    }
+
+    if (fileProgressFill) {
+      const progressPct = Math.round((completedForFile / totalForFile) * 100);
+      fileProgressFill.style.width = `${progressPct}%`;
+    }
+
     updateTotalRuns();
   }
 }
 
 // Update total runs calculation
 function updateTotalRuns() {
-  const total = selectedFiles.reduce((sum, file) => sum + file.rounds, 0);
+  const total = selectedFiles.reduce((sum, file) => {
+    const targetCount = getTargetsForFile(file).length;
+    return sum + (file.rounds * targetCount);
+  }, 0);
   elements.totalRuns.textContent = `Total Runs: ${total}`;
   elements.fileCountText.textContent = `${selectedFiles.length} file(s) selected`;
 }
@@ -284,6 +378,26 @@ function updateUI() {
     elements.runTests.textContent = '▶️ Run Tests';
     elements.runTests.classList.remove('running');
   }
+
+  getReportTypeInputs().forEach((input) => {
+    input.disabled = isRunning;
+  });
+
+  document.querySelectorAll('.target-select').forEach(select => {
+    select.disabled = isRunning;
+  });
+
+  document.querySelectorAll('.rounds-input').forEach(input => {
+    input.disabled = isRunning;
+  });
+
+  document.querySelectorAll('.report-checkbox').forEach(input => {
+    input.disabled = isRunning;
+  });
+
+  document.querySelectorAll('.remove-file-btn').forEach(button => {
+    button.disabled = isRunning;
+  });
 }
 
 // Run the JMeter tests
@@ -298,13 +412,45 @@ async function runTests() {
     const config = {
       jmeterPath: currentSettings.jmeterPath,
       exportPath: currentSettings.exportPath,
-      filesConfig: selectedFiles.map(file => ({
-        path: file.path,
-        thread: file.thread,
-        rampup: file.rampup,
-        loop: file.loop,
-        rounds: file.rounds
-      }))
+      filesConfig: selectedFiles.map(file => {
+        const targetKeys = getTargetsForFile(file);
+        const targetConfigs = targetKeys
+          .map((targetKey) => {
+            const preset = TARGET_PRESETS[targetKey];
+            if (!preset) return null;
+            return {
+              key: targetKey,
+              label: preset.label,
+              thread: preset.thread,
+              rampup: preset.rampup,
+              loop: preset.loop,
+              threshold: preset.threshold
+            };
+          })
+          .filter(Boolean);
+
+        const primaryTarget = targetConfigs[0] || {
+          key: file.target || TARGET_DEFAULT,
+          label: TARGET_OPTIONS[file.target || TARGET_DEFAULT]?.label || 'Custom',
+          thread: file.thread || TARGET_PRESETS[TARGET_DEFAULT].thread,
+          rampup: file.rampup || TARGET_PRESETS[TARGET_DEFAULT].rampup,
+          loop: file.loop || TARGET_PRESETS[TARGET_DEFAULT].loop,
+          threshold: file.threshold || TARGET_PRESETS[TARGET_DEFAULT].threshold
+        };
+
+        return {
+          path: file.path,
+          thread: primaryTarget.thread,
+          rampup: primaryTarget.rampup,
+          loop: primaryTarget.loop,
+          rounds: file.rounds,
+          target: file.target,
+          targets: targetConfigs.length > 0 ? targetConfigs : [primaryTarget],
+          reportThreshold: file.threshold || TARGET_PRESETS[TARGET_DEFAULT].threshold,
+          reportEnabled: file.reportEnabled !== false,
+          reportSelectionMode: currentSettings.reportSelectionMode || REPORT_SELECTION_DEFAULT
+        };
+      })
     };
     
     addLogEntry('Starting test execution...', 'info');
@@ -337,16 +483,39 @@ async function cancelTests() {
 
 // Update progress display
 function updateProgress(progressData) {
-  const { overallPct, fileIndex, roundIndex, totalRuns, completedRuns, currentFile, status } = progressData;
+  const {
+    overallPct,
+    fileIndex,
+    roundIndex,
+    totalRuns,
+    completedRuns,
+    currentFile,
+    status,
+    targetIndex = 0,
+    targetCount = 1,
+    targetLabel = null
+  } = progressData;
+
+  const normalizedRoundIndex = Number.isFinite(Number(roundIndex)) ? Number(roundIndex) : 0;
+  const normalizedTargetIndex = Number.isFinite(Number(targetIndex)) ? Number(targetIndex) : 0;
+  const normalizedTargetCount = Number.isFinite(Number(targetCount)) && Number(targetCount) > 0
+    ? Number(targetCount)
+    : 1;
   
   // Update overall progress
   const progressFill = elements.overallProgress.querySelector('.progress-fill');
   progressFill.style.width = `${overallPct}%`;
   elements.progressPercentage.textContent = `${overallPct}%`;
   
+  const fileRounds = fileIndex >= 0 && fileIndex < selectedFiles.length
+    ? selectedFiles[fileIndex].rounds
+    : 1;
+  const roundDisplayValue = Math.min(fileRounds, normalizedRoundIndex + 1);
+
   // Update progress text
   if (currentFile) {
-    elements.progressText.textContent = `Running ${currentFile} (Round ${roundIndex + 1}) - ${completedRuns}/${totalRuns} completed`;
+    const targetDisplay = targetLabel ? ` [${targetLabel}]` : '';
+    elements.progressText.textContent = `Running ${currentFile}${targetDisplay} (Round ${roundDisplayValue}) - ${completedRuns}/${totalRuns} completed`;
   } else {
     elements.progressText.textContent = `${completedRuns}/${totalRuns} runs completed`;
   }
@@ -359,11 +528,18 @@ function updateProgress(progressData) {
     const fileStatus = document.querySelector(`[data-file="${fileIndex}"].file-status`);
     
     if (fileProgressFill && fileProgressText && fileStatus) {
-      const fileProgress = Math.round((roundIndex / file.rounds) * 100);
+      const roundsPerTarget = file.rounds;
+      const totalForFile = Math.max(1, roundsPerTarget * normalizedTargetCount);
+      const completedForFile = Math.min(
+        totalForFile,
+        (normalizedTargetIndex * roundsPerTarget) + normalizedRoundIndex
+      );
+      const fileProgress = Math.round((completedForFile / totalForFile) * 100);
       fileProgressFill.style.width = `${fileProgress}%`;
-      fileProgressText.textContent = `${roundIndex}/${file.rounds}`;
-      fileStatus.textContent = status || 'running';
-      fileStatus.className = `file-status ${status || 'running'}`;
+      fileProgressText.textContent = `${completedForFile}/${totalForFile}`;
+      const statusText = status || 'running';
+      fileStatus.textContent = targetLabel ? `${statusText} (${targetLabel})` : statusText;
+      fileStatus.className = `file-status ${statusText}`;
     }
   }
 }
@@ -372,7 +548,7 @@ function updateProgress(progressData) {
 function handleJobComplete(result) {
   isRunning = false;
   updateUI();
-  
+
   if (result.success) {
     addLogEntry(`✅ All tests completed successfully! (${result.completedRuns}/${result.totalRuns})`, 'success');
     elements.progressText.textContent = 'All tests completed';
@@ -392,6 +568,19 @@ function handleJobComplete(result) {
     addLogEntry('❌ Tests completed with errors', 'error');
     elements.progressText.textContent = 'Completed with errors';
   }
+
+  if (Array.isArray(result.reports) && result.reports.length > 0) {
+    result.reports.forEach((reportSummary) => {
+      const { file, outputDir, selectionMode, reportCount } = reportSummary;
+      const targetLabel = reportSummary.targetLabel || reportSummary.target || null;
+      const modeText = selectionMode ? selectionMode.toUpperCase() : 'B';
+      const targetNote = targetLabel ? ` Target: ${targetLabel}.` : '';
+      addLogEntry(
+        `📊 Report captured for ${file || 'unknown file'} (mode: ${modeText}, entries: ${reportCount ?? 0}). Output folder: ${outputDir}.${targetNote}`,
+        'info'
+      );
+    });
+  }
 }
 
 // Handle job errors
@@ -402,7 +591,8 @@ function handleJobError(error) {
     updateUI();
   } else if (error.fileIndex >= 0) {
     const fileName = selectedFiles[error.fileIndex]?.name || 'Unknown file';
-    addLogEntry(`❌ Error in ${fileName} Round ${error.round}: ${error.error}`, 'error');
+    const targetInfo = error.targetLabel ? ` [${error.targetLabel}]` : '';
+    addLogEntry(`❌ Error in ${fileName}${targetInfo} Round ${error.round}: ${error.error}`, 'error');
     
     // Update file status
     const fileStatus = document.querySelector(`[data-file="${error.fileIndex}"].file-status`);
@@ -412,6 +602,99 @@ function handleJobError(error) {
     }
   } else {
     addLogEntry(`❌ Error: ${error.error}`, 'error');
+  }
+}
+
+function getReportTypeInputs() {
+  return elements.reportTypeGroup
+    ? elements.reportTypeGroup.querySelectorAll('input[name="report-type"]')
+    : [];
+}
+
+function updateReportTypeSelection(mode) {
+  getReportTypeInputs().forEach((input) => {
+    const isSelected = input.value === mode;
+    input.checked = isSelected;
+    if (input.parentElement && input.parentElement.classList) {
+      input.parentElement.classList.toggle('selected', isSelected);
+    }
+  });
+}
+
+function applyTargetPreset(file, targetKey) {
+  if (!file) return;
+  const sequence = resolveTargetSequence(targetKey);
+  file.target = targetKey;
+  file.targetSequence = sequence;
+
+  const primaryPresetKey = sequence[0];
+  const primaryPreset = TARGET_PRESETS[primaryPresetKey];
+
+  if (primaryPreset) {
+    file.thread = primaryPreset.thread;
+    file.rampup = primaryPreset.rampup;
+    file.loop = primaryPreset.loop;
+    file.threshold = primaryPreset.threshold;
+  } else if (typeof file.threshold !== 'number') {
+    file.threshold = TARGET_PRESETS[TARGET_DEFAULT].threshold;
+  }
+}
+
+function updateFileTarget(event) {
+  const fileIndex = parseInt(event.target.dataset.file, 10);
+  const targetKey = event.target.value;
+
+  if (!selectedFiles[fileIndex]) {
+    return;
+  }
+
+  if (!TARGET_PRESETS[targetKey]) {
+    // Allow composite targets defined in TARGET_OPTIONS (e.g., 'all')
+    const option = TARGET_OPTIONS[targetKey];
+    if (!option) {
+      showStatusMessage('Unknown target selected', 'error');
+      return;
+    }
+  }
+
+  applyTargetPreset(selectedFiles[fileIndex], targetKey);
+  updateFilesTable();
+  updateUI();
+  const option = TARGET_OPTIONS[targetKey] || { label: targetKey };
+  addLogEntry(`Set target for ${selectedFiles[fileIndex].name} to ${option.label}`, 'info');
+}
+
+function updateFileReport(event) {
+  const fileIndex = parseInt(event.target.dataset.file, 10);
+  const enabled = event.target.checked;
+
+  if (!selectedFiles[fileIndex]) {
+    return;
+  }
+
+  selectedFiles[fileIndex].reportEnabled = enabled;
+
+  const label = enabled ? 'enabled' : 'disabled';
+  addLogEntry(`Report capture ${label} for ${selectedFiles[fileIndex].name}`, enabled ? 'info' : 'warning');
+
+  const statusText = enabled ? 'Enabled' : 'Disabled';
+  const span = event.target.parentElement?.querySelector('span');
+  if (span) {
+    span.textContent = statusText;
+  }
+}
+
+async function handleReportTypeChange(event) {
+  const { value } = event.target;
+  currentSettings.reportSelectionMode = value;
+  updateReportTypeSelection(value);
+
+  try {
+    await window.api.setSetting('reportSelectionMode', value);
+    const label = REPORT_TYPE_LABELS[value] || value;
+    addLogEntry(`Report type set to "${label}"`, 'info');
+  } catch (error) {
+    addLogEntry(`Failed to save report type: ${error.message}`, 'error');
   }
 }
 

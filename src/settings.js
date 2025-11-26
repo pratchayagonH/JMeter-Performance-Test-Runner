@@ -5,6 +5,7 @@ const store = new Store({
   defaults: {
     jmeterPath: '',     // Last selected JMeter executable path
     exportPath: '',     // Last selected export directory path
+    reportSelectionMode: 'bi', // Default report capture mode (best individual)
     windowBounds: {     // Optional: remember window size/position
       width: 1200,
       height: 800,
@@ -22,6 +23,7 @@ function getSettings() {
   return {
     jmeterPath: store.get('jmeterPath', ''),
     exportPath: store.get('exportPath', ''),
+    reportSelectionMode: store.get('reportSelectionMode', 'bi'),
     windowBounds: store.get('windowBounds', {
       width: 1200,
       height: 800,

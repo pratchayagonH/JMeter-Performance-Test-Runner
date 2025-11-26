@@ -15,7 +15,13 @@
     "pack": "electron-builder --dir",
     "postinstall": "electron-builder install-app-deps"
   },
-  "keywords": ["electron", "jmeter", "performance", "testing", "gui"],
+  "keywords": [
+    "electron",
+    "jmeter",
+    "performance",
+    "testing",
+    "gui"
+  ],
   "author": "TheDarkNight",
   "license": "MIT",
   "devDependencies": {
@@ -23,6 +29,7 @@
     "electron-builder": "^24.6.4"
   },
   "dependencies": {
+    "capture-jmeter-report": "file:../capture-jmeter-report/capture-jmeter-report-0.1.0.tgz",
     "electron-store": "^8.1.0"
   },
   "build": {
@@ -50,11 +57,17 @@
       "target": [
         {
           "target": "dmg",
-          "arch": ["x64", "arm64"]
+          "arch": [
+            "x64",
+            "arm64"
+          ]
         },
         {
           "target": "zip",
-          "arch": ["x64", "arm64"]
+          "arch": [
+            "x64",
+            "arm64"
+          ]
         }
       ],
       "icon": "assets/icon.icns"
@@ -63,11 +76,17 @@
       "target": [
         {
           "target": "nsis",
-          "arch": ["x64", "ia32"]
+          "arch": [
+            "x64",
+            "ia32"
+          ]
         },
         {
           "target": "zip",
-          "arch": ["x64", "ia32"]
+          "arch": [
+            "x64",
+            "ia32"
+          ]
         }
       ],
       "icon": "assets/icon.ico"

@@ -40,6 +40,30 @@
                     <span id="file-count-text">No files selected</span>
                 </div>
             </div>
+
+            <div class="config-row">
+                <div class="config-item report-type-item">
+                    <span class="config-label">Report Type:</span>
+                    <div class="report-type-group" id="report-type-group">
+                        <label class="report-type-option">
+                            <input type="radio" name="report-type" value="b">
+                            <span>Best (b)</span>
+                        </label>
+                        <label class="report-type-option">
+                            <input type="radio" name="report-type" value="w">
+                            <span>Worst (w)</span>
+                        </label>
+                        <label class="report-type-option">
+                            <input type="radio" name="report-type" value="bi" checked>
+                            <span>Best Individual (bi)</span>
+                        </label>
+                        <label class="report-type-option">
+                            <input type="radio" name="report-type" value="wi">
+                            <span>Worst Individual (wi)</span>
+                        </label>
+                    </div>
+                </div>
+            </div>
         </section>
 
         <!-- Test Files Table -->
@@ -56,10 +80,9 @@
                     <thead>
                         <tr>
                             <th>File</th>
-                            <th>Threads</th>
-                            <th>Ramp-up (s)</th>
-                            <th>Loops</th>
+                            <th>Target</th>
                             <th>Rounds</th>
+                            <th>Report</th>
                             <th>Progress</th>
                             <th>Status</th>
                             <th>Actions</th>
