@@ -25,12 +25,15 @@
   "author": "TheDarkNight",
   "license": "MIT",
   "devDependencies": {
-    "electron": "^25.0.0",
-    "electron-builder": "^24.6.4"
+    "electron": "39.8.5",
+    "electron-builder": "26.6.0"
   },
   "dependencies": {
     "capture-jmeter-report": "file:../capture-jmeter-report/capture-jmeter-report-0.1.0.tgz",
     "electron-store": "^8.1.0"
+  },
+  "overrides": {
+    "undici": "7.24.0"
   },
   "build": {
     "appId": "com.thedarknight.jmeter-performance-test-runner",

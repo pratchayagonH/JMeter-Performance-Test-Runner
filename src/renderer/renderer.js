@@ -19,6 +19,10 @@ const TARGET_OPTIONS = {
   all: { label: 'All', sequence: ['1tps', '30tps'] }
 };
 const TARGET_DEFAULT = '1tps';
+const MAX_LOG_ENTRIES = 1000;
+const LOG_FLUSH_INTERVAL_MS = 50;
+const pendingLogEntries = [];
+let logFlushTimer = null;
 
 // DOM element references
 const elements = {
@@ -445,6 +449,7 @@ async function runTests() {
           loop: primaryTarget.loop,
           rounds: file.rounds,
           target: file.target,
+          targetLabel: primaryTarget.label,
           targets: targetConfigs.length > 0 ? targetConfigs : [primaryTarget],
           reportThreshold: file.threshold || TARGET_PRESETS[TARGET_DEFAULT].threshold,
           reportEnabled: file.reportEnabled !== false,
@@ -698,39 +703,79 @@ async function handleReportTypeChange(event) {
   }
 }
 
-// Add log entry to the log output
-function addLogEntry(message, type = 'info', timestamp = null) {
-  const logEntry = document.createElement('div');
-  logEntry.className = `log-entry ${type}`;
-  
-  const time = timestamp ? new Date(timestamp).toLocaleTimeString() : new Date().toLocaleTimeString();
-  logEntry.innerHTML = `
-    <span class="timestamp">[${time}]</span>
-    <span class="message">${escapeHtml(message)}</span>
-  `;
-  
-  elements.logOutput.appendChild(logEntry);
-  
-  // Auto-scroll if enabled
-  if (elements.autoScroll.checked) {
+function flushLogEntries() {
+  if (logFlushTimer) {
+    clearTimeout(logFlushTimer);
+    logFlushTimer = null;
+  }
+
+  if (pendingLogEntries.length === 0) {
+    return;
+  }
+
+  const shouldScroll = elements.autoScroll.checked;
+  const fragment = document.createDocumentFragment();
+  const entries = pendingLogEntries.splice(0, pendingLogEntries.length);
+
+  entries.forEach((entry) => {
+    const logEntry = document.createElement('div');
+    const time = entry.timestamp ? new Date(entry.timestamp).toLocaleTimeString() : new Date().toLocaleTimeString();
+    const timestamp = document.createElement('span');
+    const message = document.createElement('span');
+
+    logEntry.className = `log-entry ${entry.type}`;
+    timestamp.className = 'timestamp';
+    timestamp.textContent = `[${time}]`;
+    message.className = 'message';
+    message.textContent = entry.message;
+
+    logEntry.appendChild(timestamp);
+    logEntry.appendChild(message);
+    fragment.appendChild(logEntry);
+  });
+
+  elements.logOutput.appendChild(fragment);
+
+  while (elements.logOutput.children.length > MAX_LOG_ENTRIES) {
+    elements.logOutput.removeChild(elements.logOutput.firstElementChild);
+  }
+
+  if (shouldScroll) {
     scrollToBottom();
   }
-  
-  // Limit log entries to prevent memory issues
-  const logEntries = elements.logOutput.children;
-  if (logEntries.length > 1000) {
-    elements.logOutput.removeChild(logEntries[0]);
+}
+
+function scheduleLogFlush() {
+  if (logFlushTimer) {
+    return;
   }
+
+  logFlushTimer = window.setTimeout(() => {
+    logFlushTimer = null;
+    flushLogEntries();
+  }, LOG_FLUSH_INTERVAL_MS);
+}
+
+// Add log entry to the log output
+function addLogEntry(message, type = 'info', timestamp = null) {
+  pendingLogEntries.push({ message, type, timestamp });
+  scheduleLogFlush();
 }
 
 // Clear log output
 function clearLogs() {
-  elements.logOutput.innerHTML = '';
+  pendingLogEntries.length = 0;
+  if (logFlushTimer) {
+    clearTimeout(logFlushTimer);
+    logFlushTimer = null;
+  }
+  elements.logOutput.textContent = '';
   addLogEntry('Logs cleared', 'info');
 }
 
 // Export logs to file
 async function exportLogs() {
+  flushLogEntries();
   const logs = Array.from(elements.logOutput.children)
     .map(entry => entry.textContent)
     .join('\n');
@@ -773,15 +818,9 @@ function showStatusMessage(message, type = 'info') {
   }, 5000);
 }
 
-// Escape HTML to prevent XSS
-function escapeHtml(text) {
-  const div = document.createElement('div');
-  div.textContent = text;
-  return div.innerHTML;
-}
-
 // Handle window close - cleanup
 window.addEventListener('beforeunload', () => {
+  flushLogEntries();
   window.api.removeAllListeners('progress');
   window.api.removeAllListeners('log');
   window.api.removeAllListeners('job-complete');

@@ -1,11 +1,15 @@
 const { spawn } = require('child_process');
 const path = require('path');
 const fs = require('fs');
-const { captureReport } = require('capture-jmeter-report');
+const { JMeterReportAnalyzer } = require('capture-jmeter-report/src/index.js');
+const { chromium } = require('playwright');
 
 const DEFAULT_SELECTION_MODE = 'b';
 const DEFAULT_THRESHOLD = 1000;
 const DEFAULT_TARGET_LABEL = 'Custom';
+const LEGACY_MYSQL_DRIVER = 'com.mysql.jdbc.Driver';
+const MODERN_MYSQL_DRIVER = 'com.mysql.cj.jdbc.Driver';
+const LOG_FLUSH_INTERVAL_MS = 75;
 
 function sanitizeTargetKey(targetKey) {
   return String(targetKey || 'default')
@@ -13,10 +17,376 @@ function sanitizeTargetKey(targetKey) {
     .toLowerCase() || 'default';
 }
 
+function sanitizeReportLabel(label) {
+  return String(label || 'report').replace(/[^\w\-_.]/g, '_');
+}
+
+function resolveReportLocation(location) {
+  const normalizedLocation = String(location || '').replace(/[\\/]+$/, '');
+  const locationPath = path.resolve(normalizedLocation);
+
+  if (fs.existsSync(locationPath) && fs.statSync(locationPath).isDirectory()) {
+    return {
+      locationPath,
+      folderName: path.basename(locationPath),
+      searchLocation: path.dirname(locationPath)
+    };
+  }
+
+  return {
+    locationPath,
+    folderName: path.basename(locationPath),
+    searchLocation: path.dirname(locationPath) || process.cwd()
+  };
+}
+
+function findImmediateReportFolders(locationPath, folderName) {
+  if (!fs.existsSync(locationPath) || !fs.statSync(locationPath).isDirectory()) {
+    return [];
+  }
+
+  return fs.readdirSync(locationPath, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory() && entry.name !== `${folderName}_result`)
+    .map((entry) => path.join(locationPath, entry.name))
+    .filter((folderPath) => fs.existsSync(path.join(folderPath, 'index.html')));
+}
+
+async function collectMatchingReportFolders(analyzer, locationPath, folderName) {
+  const directReportFolders = findImmediateReportFolders(locationPath, folderName);
+
+  if (directReportFolders.length > 0) {
+    return directReportFolders;
+  }
+
+  return analyzer.findMatchingFolders(folderName);
+}
+
+async function populateFolderStats(analyzer, matchingFolders) {
+  const folderStats = await Promise.all(matchingFolders.map(async (folderPath) => {
+    const indexFile = path.join(folderPath, 'index.html');
+
+    if (!fs.existsSync(indexFile)) {
+      return null;
+    }
+
+    const stats = await analyzer.parseStatisticsTable(indexFile);
+
+    if (Object.keys(stats).length === 0) {
+      return null;
+    }
+
+    return { folderPath, stats };
+  }));
+
+  folderStats.filter(Boolean).forEach(({ folderPath, stats }) => {
+    analyzer.foldersData[folderPath] = stats;
+  });
+}
+
+async function highlightStatisticsRow(page, label) {
+  return page.evaluate((targetLabel) => {
+    const rows = Array.from(document.querySelectorAll('#statisticsTable tr'));
+    let matched = false;
+
+    rows.forEach((row) => {
+      row.style.border = '';
+      row.style.backgroundColor = '';
+
+      const firstCell = row.querySelector('td:first-child');
+      if (!firstCell) {
+        return;
+      }
+
+      if (firstCell.textContent.trim() === targetLabel) {
+        row.style.border = '3px solid #bd0404';
+        row.style.backgroundColor = 'rgba(189, 4, 4, 0.1)';
+        matched = true;
+      }
+    });
+
+    return matched;
+  }, label);
+}
+
+async function waitForStatisticsRow(page, label) {
+  try {
+    await page.waitForFunction((targetLabel) => {
+      return Array.from(document.querySelectorAll('#statisticsTable tr td:first-child'))
+        .some((cell) => cell.textContent.trim() === targetLabel);
+    }, label, { timeout: 3000 });
+
+    return true;
+  } catch (error) {
+    return false;
+  }
+}
+
+async function captureReportScreenshots(reports) {
+  const successfulScreenshots = new Set();
+  const reportsBySourceFolder = new Map();
+
+  reports.forEach((report) => {
+    if (!report.sourceFolder || !report.screenshotPath) {
+      return;
+    }
+
+    const sourceReports = reportsBySourceFolder.get(report.sourceFolder) || [];
+    sourceReports.push(report);
+    reportsBySourceFolder.set(report.sourceFolder, sourceReports);
+  });
+
+  if (reportsBySourceFolder.size === 0) {
+    return successfulScreenshots;
+  }
+
+  let browser = null;
+
+  try {
+    browser = await chromium.launch({ headless: true });
+
+    for (const [sourceFolder, sourceReports] of reportsBySourceFolder.entries()) {
+      const indexFile = path.join(sourceFolder, 'index.html');
+
+      if (!fs.existsSync(indexFile)) {
+        continue;
+      }
+
+      const page = await browser.newPage();
+
+      try {
+        await page.goto(`file://${path.resolve(indexFile)}`);
+        await page.waitForSelector('#statisticsTable', { timeout: 10000 });
+
+        const table = page.locator('#statisticsTable');
+
+        for (const report of sourceReports) {
+          const rowReady = await waitForStatisticsRow(page, report.label);
+
+          if (!rowReady) {
+            continue;
+          }
+
+          const foundRow = await highlightStatisticsRow(page, report.label);
+
+          if (!foundRow) {
+            continue;
+          }
+
+          await table.screenshot({ path: report.screenshotPath });
+          successfulScreenshots.add(report.screenshotPath);
+        }
+      } finally {
+        await page.close();
+      }
+    }
+  } catch (error) {
+    return successfulScreenshots;
+  } finally {
+    if (browser) {
+      await browser.close();
+    }
+  }
+
+  return successfulScreenshots;
+}
+
+function prepareJmxTestPlan(filePath, tempDir, runStamp) {
+  const planContent = fs.readFileSync(filePath, 'utf8');
+  const legacyDriverMatches = planContent.match(/com\.mysql\.jdbc\.Driver/g) || [];
+
+  if (legacyDriverMatches.length === 0) {
+    return {
+      planPath: filePath,
+      normalizedLegacyMySqlDriver: false,
+      replacementCount: 0
+    };
+  }
+
+  const normalizedPlanPath = path.join(
+    tempDir,
+    `${path.basename(filePath, path.extname(filePath))}-${runStamp}.jmx`
+  );
+  const normalizedPlanContent = planContent.replace(
+    /com\.mysql\.jdbc\.Driver/g,
+    MODERN_MYSQL_DRIVER
+  );
+
+  fs.writeFileSync(normalizedPlanPath, normalizedPlanContent, 'utf8');
+
+  return {
+    planPath: normalizedPlanPath,
+    normalizedLegacyMySqlDriver: true,
+    replacementCount: legacyDriverMatches.length
+  };
+}
+
+async function captureReport(options) {
+  const location = options?.location;
+  const output = options?.output;
+  const selectionMode = options?.type || DEFAULT_SELECTION_MODE;
+  const threshold = Number.isFinite(Number(options?.threshold))
+    ? Number(options.threshold)
+    : DEFAULT_THRESHOLD;
+  const targetLabel = String(options?.targetLabel || DEFAULT_TARGET_LABEL).trim() || DEFAULT_TARGET_LABEL;
+
+  if (!location) {
+    throw new Error('Report location is required');
+  }
+
+  if (!output) {
+    throw new Error('Report output path is required');
+  }
+
+  const { locationPath, folderName, searchLocation } = resolveReportLocation(location);
+  const analyzer = new JMeterReportAnalyzer(searchLocation, output, selectionMode, threshold, targetLabel);
+  const matchingFolders = await collectMatchingReportFolders(analyzer, locationPath, folderName);
+
+  if (matchingFolders.length === 0) {
+    throw new Error(`No folders found containing '${folderName}' in ${searchLocation}`);
+  }
+
+  await populateFolderStats(analyzer, matchingFolders);
+
+  if (Object.keys(analyzer.foldersData).length === 0) {
+    throw new Error('No valid JMeter reports found');
+  }
+
+  const outputDir = path.join(output, `${folderName}_result`);
+
+  if (fs.existsSync(outputDir)) {
+    fs.rmSync(outputDir, { recursive: true, force: true });
+  }
+  fs.mkdirSync(outputDir, { recursive: true });
+
+  let selectedData = {};
+  let selectedFolder = null;
+
+  if (selectionMode === 'b') {
+    [selectedFolder, selectedData] = analyzer.selectBestFolder();
+  } else if (selectionMode === 'w') {
+    [selectedFolder, selectedData] = analyzer.selectWorstFolder();
+  } else if (selectionMode === 'bi') {
+    selectedData = analyzer.selectBestIndividual();
+  } else if (selectionMode === 'wi') {
+    selectedData = analyzer.selectWorstIndividual();
+  } else {
+    throw new Error(`Unsupported report selection mode: ${selectionMode}`);
+  }
+
+  const reports = [];
+
+  for (const [label, data] of Object.entries(selectedData)) {
+    const safeLabel = sanitizeReportLabel(label);
+    const htmlPath = path.join(outputDir, `${safeLabel}.html`);
+    const screenshotPath = path.join(outputDir, `${safeLabel}.png`);
+    const sourceFolder = ['bi', 'wi'].includes(selectionMode)
+      ? data.source_folder || selectedFolder
+      : selectedFolder;
+
+    await analyzer.generateHtmlFile(label, data, folderName, outputDir);
+
+    reports.push({
+      label,
+      htmlPath,
+      screenshotPath,
+      sourceFolder,
+      min: data.min,
+      max: data.max,
+      pct95: data['95th_pct']
+    });
+  }
+
+  const successfulScreenshots = await captureReportScreenshots(reports);
+
+  return {
+    outputDir,
+    selectionMode,
+    threshold,
+    targetLabel,
+    reports: reports.map((report) => ({
+      ...report,
+      screenshotPath: report.screenshotPath && successfulScreenshots.has(report.screenshotPath)
+        ? report.screenshotPath
+        : null
+    }))
+  };
+}
+
 let webContents = null;
 let currentJob = null;
 let isRunning = false;
 let shouldCancel = false;
+let pendingLogs = [];
+let logFlushTimer = null;
+
+function hasWebContents() {
+  return Boolean(webContents && !webContents.isDestroyed());
+}
+
+function sendIpc(channel, payload) {
+  if (!hasWebContents()) {
+    return;
+  }
+
+  webContents.send(channel, payload);
+}
+
+function flushQueuedLogs() {
+  if (pendingLogs.length === 0) {
+    return;
+  }
+
+  if (logFlushTimer) {
+    clearTimeout(logFlushTimer);
+    logFlushTimer = null;
+  }
+
+  if (!hasWebContents()) {
+    pendingLogs = [];
+    return;
+  }
+
+  const mergedLogs = [];
+
+  pendingLogs.forEach((entry) => {
+    const lastEntry = mergedLogs[mergedLogs.length - 1];
+
+    if (
+      lastEntry &&
+      lastEntry.fileIndex === entry.fileIndex &&
+      lastEntry.roundIndex === entry.roundIndex &&
+      lastEntry.isStdErr === entry.isStdErr
+    ) {
+      lastEntry.text += entry.text;
+      lastEntry.timestamp = entry.timestamp;
+      return;
+    }
+
+    mergedLogs.push({ ...entry });
+  });
+
+  pendingLogs = [];
+  mergedLogs.forEach((entry) => {
+    sendIpc('log', entry);
+  });
+}
+
+function queueLog(payload) {
+  if (!hasWebContents()) {
+    return;
+  }
+
+  pendingLogs.push(payload);
+
+  if (logFlushTimer) {
+    return;
+  }
+
+  logFlushTimer = setTimeout(() => {
+    logFlushTimer = null;
+    flushQueuedLogs();
+  }, LOG_FLUSH_INTERVAL_MS);
+}
 
 /**
  * Initialize the runner with webContents for progress updates
@@ -24,6 +394,12 @@ let shouldCancel = false;
  */
 function init(mainWebContents) {
   webContents = mainWebContents;
+  pendingLogs = [];
+
+  if (logFlushTimer) {
+    clearTimeout(logFlushTimer);
+    logFlushTimer = null;
+  }
 }
 
 /**
@@ -97,8 +473,8 @@ async function runJobs(jmeterPath, exportPath, filesConfig) {
         }
         fs.mkdirSync(targetBasePath, { recursive: true });
 
-        if (webContents) {
-          webContents.send('progress', {
+        if (hasWebContents()) {
+          sendIpc('progress', {
             overallPct: Math.round((completedRuns / totalRuns) * 100),
             fileIndex,
             roundIndex: 0,
@@ -137,8 +513,8 @@ async function runJobs(jmeterPath, exportPath, filesConfig) {
             completedRuns++;
 
             // Send progress update
-            if (webContents) {
-              webContents.send('progress', {
+            if (hasWebContents()) {
+              sendIpc('progress', {
                 overallPct: Math.round((completedRuns / totalRuns) * 100),
                 fileIndex,
                 roundIndex: round,
@@ -154,7 +530,8 @@ async function runJobs(jmeterPath, exportPath, filesConfig) {
 
           } catch (error) {
             // Send error notification but continue with next round
-            webContents.send('job-error', {
+            flushQueuedLogs();
+            sendIpc('job-error', {
               fileIndex,
               roundIndex: round - 1,
               targetIndex,
@@ -171,8 +548,8 @@ async function runJobs(jmeterPath, exportPath, filesConfig) {
         if (shouldCancel) break;
 
         if (captureDisabled) {
-          if (targetIndex === 0 && webContents) {
-            webContents.send('log', {
+          if (targetIndex === 0 && hasWebContents()) {
+            queueLog({
               fileIndex,
               text: `Report analysis skipped for ${basename} (report capture disabled).\n`,
               isStdErr: false,
@@ -180,8 +557,8 @@ async function runJobs(jmeterPath, exportPath, filesConfig) {
             });
           }
 
-          if (webContents) {
-            webContents.send('progress', {
+          if (hasWebContents()) {
+            sendIpc('progress', {
               overallPct: Math.round((completedRuns / totalRuns) * 100),
               fileIndex,
               roundIndex: rounds,
@@ -202,8 +579,8 @@ async function runJobs(jmeterPath, exportPath, filesConfig) {
             ? Number(targetConfig.threshold)
             : baseThreshold;
 
-          if (webContents) {
-            webContents.send('log', {
+          if (hasWebContents()) {
+            queueLog({
               fileIndex,
               text: `Analyzing reports for ${basename} [${targetLabel}] using selection "${selectionMode}" (threshold ${targetThreshold} ms)...\n`,
               isStdErr: false,
@@ -215,7 +592,8 @@ async function runJobs(jmeterPath, exportPath, filesConfig) {
             location: targetBasePath,
             output: targetBasePath,
             type: selectionMode,
-            threshold: targetThreshold
+            threshold: targetThreshold,
+            targetLabel
           });
 
           analysisResults.push({
@@ -228,8 +606,8 @@ async function runJobs(jmeterPath, exportPath, filesConfig) {
             reportCount: Array.isArray(reportResult.reports) ? reportResult.reports.length : 0
           });
 
-          if (webContents) {
-            webContents.send('log', {
+          if (hasWebContents()) {
+            queueLog({
               fileIndex,
               text: `Report analysis complete for ${basename} [${targetLabel}] (threshold ${targetThreshold} ms). Results saved to ${reportResult.outputDir}\n`,
               isStdErr: false,
@@ -237,8 +615,8 @@ async function runJobs(jmeterPath, exportPath, filesConfig) {
             });
           }
 
-          if (webContents) {
-            webContents.send('progress', {
+          if (hasWebContents()) {
+            sendIpc('progress', {
               overallPct: Math.round((completedRuns / totalRuns) * 100),
               fileIndex,
               roundIndex: rounds,
@@ -252,14 +630,14 @@ async function runJobs(jmeterPath, exportPath, filesConfig) {
             });
           }
         } catch (analysisError) {
-          if (webContents) {
-            webContents.send('log', {
+          if (hasWebContents()) {
+            queueLog({
               fileIndex,
               text: `Report analysis failed for ${basename} [${targetLabel}]: ${analysisError.message}\n`,
               isStdErr: true,
               timestamp: new Date().toISOString()
             });
-            webContents.send('progress', {
+            sendIpc('progress', {
               overallPct: Math.round((completedRuns / totalRuns) * 100),
               fileIndex,
               roundIndex: rounds,
@@ -281,7 +659,8 @@ async function runJobs(jmeterPath, exportPath, filesConfig) {
     }
 
     // Send completion notification
-    webContents.send('job-complete', {
+    flushQueuedLogs();
+    sendIpc('job-complete', {
       success: !shouldCancel,
       totalRuns,
       completedRuns,
@@ -290,11 +669,13 @@ async function runJobs(jmeterPath, exportPath, filesConfig) {
     });
 
   } catch (error) {
-    webContents.send('job-error', {
+    flushQueuedLogs();
+    sendIpc('job-error', {
       error: error.message,
       fatal: true
     });
   } finally {
+    flushQueuedLogs();
     isRunning = false;
     currentJob = null;
     shouldCancel = false;
@@ -344,11 +725,12 @@ function runSingleJob(jmeterPath, exportPath, filePath, basename, params, round,
       // Ensure fresh directories for this run
       fs.mkdirSync(outDir, { recursive: true });
       fs.mkdirSync(jmeterTempDir, { recursive: true });
+      const preparedTestPlan = prepareJmxTestPlan(filePath, jmeterTempDir, runStamp);
 
       // Prepare JMeter command arguments
       const args = [
         '-n',                           // Non-GUI mode
-        '-t', filePath,                 // Test plan file
+        '-t', preparedTestPlan.planPath, // Test plan file
         `-Jthread=${thread}`,           // Thread count parameter
         `-Jrampup=${rampup}`,          // Ramp-up period parameter
         `-Jloop=${loop}`,              // Loop count parameter
@@ -360,13 +742,23 @@ function runSingleJob(jmeterPath, exportPath, filePath, basename, params, round,
       ];
 
       // Send log message about starting
-      webContents.send('log', {
+      queueLog({
         fileIndex,
         roundIndex,
         text: `Starting ${basename} [${targetLabel}] Round ${round} with ${thread} threads, ${rampup}s ramp-up, ${loop} loops...\n`,
         isStdErr: false,
         timestamp: new Date().toISOString()
       });
+
+      if (preparedTestPlan.normalizedLegacyMySqlDriver) {
+        queueLog({
+          fileIndex,
+          roundIndex,
+          text: `Normalized ${preparedTestPlan.replacementCount} deprecated MySQL JDBC driver reference(s) in a temporary test plan copy: ${LEGACY_MYSQL_DRIVER} -> ${MODERN_MYSQL_DRIVER}\n`,
+          isStdErr: false,
+          timestamp: new Date().toISOString()
+        });
+      }
 
       // Determine the correct JMeter executable for the platform
       let actualJMeterPath = jmeterPath;
@@ -400,7 +792,7 @@ function runSingleJob(jmeterPath, exportPath, filePath, basename, params, round,
       // Handle stdout
       currentJob.stdout.on('data', (data) => {
         const text = data.toString();
-        webContents.send('log', {
+        queueLog({
           fileIndex,
           roundIndex,
           text: `[${targetLabel}] ${text}`,
@@ -412,7 +804,7 @@ function runSingleJob(jmeterPath, exportPath, filePath, basename, params, round,
       // Handle stderr
       currentJob.stderr.on('data', (data) => {
         const text = data.toString();
-        webContents.send('log', {
+        queueLog({
           fileIndex,
           roundIndex,
           text: `[${targetLabel}] ${text}`,
@@ -430,7 +822,7 @@ function runSingleJob(jmeterPath, exportPath, filePath, basename, params, round,
           ? `Process [${targetLabel}] terminated by signal ${signal}\n`
           : `Process [${targetLabel}] exited with code ${code}\n`;
 
-        webContents.send('log', {
+        queueLog({
           fileIndex,
           roundIndex,
           text: logMsg,
@@ -442,7 +834,7 @@ function runSingleJob(jmeterPath, exportPath, filePath, basename, params, round,
           try {
             fs.rmSync(jmeterTempDir, { recursive: true, force: true });
           } catch (cleanupError) {
-            webContents.send('log', {
+            queueLog({
               fileIndex,
               roundIndex,
               text: `Warning: Unable to clean temp directory ${jmeterTempDir}: ${cleanupError.message}\n`,
@@ -450,8 +842,10 @@ function runSingleJob(jmeterPath, exportPath, filePath, basename, params, round,
               timestamp: new Date().toISOString()
             });
           }
+          flushQueuedLogs();
           resolve();
         } else {
+          flushQueuedLogs();
           reject(new Error(`JMeter process failed with exit code ${code}`));
         }
       });
@@ -461,7 +855,7 @@ function runSingleJob(jmeterPath, exportPath, filePath, basename, params, round,
         if (hasExited) return;
         hasExited = true;
 
-        webContents.send('log', {
+        queueLog({
           fileIndex,
           roundIndex,
           text: `Process [${targetLabel}] error: ${error.message}\n`,
@@ -469,6 +863,7 @@ function runSingleJob(jmeterPath, exportPath, filePath, basename, params, round,
           timestamp: new Date().toISOString()
         });
 
+        flushQueuedLogs();
         reject(error);
       });
 
@@ -502,7 +897,7 @@ function cancelRun() {
     setTimeout(() => {
       if (currentJob && !currentJob.killed) {
         currentJob.kill('SIGKILL');
-        webContents.send('log', {
+        queueLog({
           text: 'Force killed JMeter process after timeout\n',
           isStdErr: true,
           timestamp: new Date().toISOString()
@@ -512,8 +907,9 @@ function cancelRun() {
   }
 
   // Send cancellation notification
-  if (webContents) {
-    webContents.send('job-complete', {
+  if (hasWebContents()) {
+    flushQueuedLogs();
+    sendIpc('job-complete', {
       success: false,
       cancelled: true,
       message: 'Jobs cancelled by user'
