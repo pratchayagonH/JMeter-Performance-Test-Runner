@@ -1,8 +1,15 @@
 const { spawn } = require('child_process');
 const path = require('path');
 const fs = require('fs');
+const { BrowserWindow } = require('electron');
 const { JMeterReportAnalyzer } = require('capture-jmeter-report/src/index.js');
-const { chromium } = require('playwright');
+
+let chromium = null;
+try {
+  ({ chromium } = require('playwright'));
+} catch (error) {
+  chromium = null;
+}
 
 const DEFAULT_SELECTION_MODE = 'b';
 const DEFAULT_THRESHOLD = 1000;
@@ -121,29 +128,17 @@ async function waitForStatisticsRow(page, label) {
   }
 }
 
-async function captureReportScreenshots(reports) {
-  const successfulScreenshots = new Set();
-  const reportsBySourceFolder = new Map();
-
-  reports.forEach((report) => {
-    if (!report.sourceFolder || !report.screenshotPath) {
-      return;
-    }
-
-    const sourceReports = reportsBySourceFolder.get(report.sourceFolder) || [];
-    sourceReports.push(report);
-    reportsBySourceFolder.set(report.sourceFolder, sourceReports);
-  });
-
-  if (reportsBySourceFolder.size === 0) {
-    return successfulScreenshots;
+async function captureReportScreenshotsWithPlaywright(reportsBySourceFolder) {
+  if (!chromium) {
+    throw new Error('Playwright is not available');
   }
 
+  const successfulScreenshots = new Set();
   let browser = null;
 
-  try {
-    browser = await chromium.launch({ headless: true });
+  browser = await chromium.launch({ headless: true });
 
+  try {
     for (const [sourceFolder, sourceReports] of reportsBySourceFolder.entries()) {
       const indexFile = path.join(sourceFolder, 'index.html');
 
@@ -179,15 +174,224 @@ async function captureReportScreenshots(reports) {
         await page.close();
       }
     }
-  } catch (error) {
-    return successfulScreenshots;
   } finally {
-    if (browser) {
-      await browser.close();
+    await browser.close();
+  }
+
+  return successfulScreenshots;
+}
+
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function waitForElectronStatisticsTable(contents, timeoutMs = 10000) {
+  const start = Date.now();
+
+  while (Date.now() - start < timeoutMs) {
+    const tableReady = await contents.executeJavaScript(
+      'Boolean(document.querySelector("#statisticsTable"))',
+      true
+    );
+
+    if (tableReady) {
+      return true;
+    }
+
+    await delay(100);
+  }
+
+  return false;
+}
+
+async function waitForElectronStatisticsRow(contents, label, timeoutMs = 3000) {
+  const start = Date.now();
+  const serializedLabel = JSON.stringify(label);
+
+  while (Date.now() - start < timeoutMs) {
+    const rowReady = await contents.executeJavaScript(`
+      Array.from(document.querySelectorAll('#statisticsTable tr td:first-child'))
+        .some((cell) => cell.textContent.trim() === ${serializedLabel})
+    `, true);
+
+    if (rowReady) {
+      return true;
+    }
+
+    await delay(100);
+  }
+
+  return false;
+}
+
+async function highlightElectronStatisticsRow(contents, label) {
+  const serializedLabel = JSON.stringify(label);
+
+  return contents.executeJavaScript(`
+    (() => {
+      const rows = Array.from(document.querySelectorAll('#statisticsTable tr'));
+      let matched = false;
+
+      rows.forEach((row) => {
+        row.style.border = '';
+        row.style.backgroundColor = '';
+
+        const firstCell = row.querySelector('td:first-child');
+        if (!firstCell) {
+          return;
+        }
+
+        if (firstCell.textContent.trim() === ${serializedLabel}) {
+          row.style.border = '3px solid #bd0404';
+          row.style.backgroundColor = 'rgba(189, 4, 4, 0.1)';
+          matched = true;
+        }
+      });
+
+      return matched;
+    })()
+  `, true);
+}
+
+async function waitForElectronPaint(contents) {
+  await contents.executeJavaScript(`
+    new Promise((resolve) => {
+      requestAnimationFrame(() => {
+        requestAnimationFrame(resolve);
+      });
+    })
+  `, true);
+}
+
+async function getElectronStatisticsTableBounds(contents) {
+  return contents.executeJavaScript(`
+    (() => {
+      const table = document.querySelector('#statisticsTable');
+      if (!table) {
+        return null;
+      }
+
+      document.documentElement.style.background = '#ffffff';
+      document.body.style.background = '#ffffff';
+      table.scrollIntoView({ block: 'start', inline: 'nearest' });
+
+      const rect = table.getBoundingClientRect();
+      const viewportWidth = window.innerWidth || document.documentElement.clientWidth || 1400;
+      const viewportHeight = window.innerHeight || document.documentElement.clientHeight || 1000;
+      const x = Math.max(0, Math.floor(rect.left));
+      const y = Math.max(0, Math.floor(rect.top));
+
+      return {
+        x,
+        y,
+        width: Math.max(1, Math.min(Math.ceil(rect.width), viewportWidth - x)),
+        height: Math.max(1, Math.min(Math.ceil(rect.height), viewportHeight - y))
+      };
+    })()
+  `, true);
+}
+
+async function captureReportScreenshotsWithElectron(reportsBySourceFolder) {
+  const successfulScreenshots = new Set();
+
+  for (const [sourceFolder, sourceReports] of reportsBySourceFolder.entries()) {
+    const indexFile = path.join(sourceFolder, 'index.html');
+
+    if (!fs.existsSync(indexFile)) {
+      continue;
+    }
+
+    const captureWindow = new BrowserWindow({
+      show: false,
+      width: 1600,
+      height: 1200,
+      backgroundColor: '#ffffff',
+      paintWhenInitiallyHidden: true,
+      webPreferences: {
+        contextIsolation: true,
+        nodeIntegration: false,
+        offscreen: true,
+        sandbox: true
+      }
+    });
+
+    try {
+      await captureWindow.loadFile(indexFile);
+      const contents = captureWindow.webContents;
+      const tableReady = await waitForElectronStatisticsTable(contents);
+
+      if (!tableReady) {
+        continue;
+      }
+
+      for (const report of sourceReports) {
+        const rowReady = await waitForElectronStatisticsRow(contents, report.label);
+
+        if (!rowReady) {
+          continue;
+        }
+
+        const foundRow = await highlightElectronStatisticsRow(contents, report.label);
+
+        if (!foundRow) {
+          continue;
+        }
+
+        await waitForElectronPaint(contents);
+        const tableBounds = await getElectronStatisticsTableBounds(contents);
+
+        if (!tableBounds) {
+          continue;
+        }
+
+        await waitForElectronPaint(contents);
+        const image = await contents.capturePage(tableBounds);
+        fs.writeFileSync(report.screenshotPath, image.toPNG());
+        successfulScreenshots.add(report.screenshotPath);
+      }
+    } finally {
+      if (!captureWindow.isDestroyed()) {
+        captureWindow.destroy();
+      }
     }
   }
 
   return successfulScreenshots;
+}
+
+async function captureReportScreenshots(reports) {
+  const reportsBySourceFolder = new Map();
+
+  reports.forEach((report) => {
+    if (!report.sourceFolder || !report.screenshotPath) {
+      return;
+    }
+
+    const sourceReports = reportsBySourceFolder.get(report.sourceFolder) || [];
+    sourceReports.push(report);
+    reportsBySourceFolder.set(report.sourceFolder, sourceReports);
+  });
+
+  if (reportsBySourceFolder.size === 0) {
+    return { successfulScreenshots: new Set(), error: null };
+  }
+
+  try {
+    return {
+      successfulScreenshots: await captureReportScreenshotsWithPlaywright(reportsBySourceFolder),
+      error: null
+    };
+  } catch (playwrightError) {
+    try {
+      return {
+        successfulScreenshots: await captureReportScreenshotsWithElectron(reportsBySourceFolder),
+        error: null
+      };
+    } catch (electronError) {
+      electronError.message = `${electronError.message} (Playwright fallback reason: ${playwrightError.message})`;
+      return { successfulScreenshots: new Set(), error: electronError };
+    }
+  }
 }
 
 function prepareJmxTestPlan(filePath, tempDir, runStamp) {
@@ -296,13 +500,15 @@ async function captureReport(options) {
     });
   }
 
-  const successfulScreenshots = await captureReportScreenshots(reports);
+  const screenshotResult = await captureReportScreenshots(reports);
+  const successfulScreenshots = screenshotResult.successfulScreenshots;
 
   return {
     outputDir,
     selectionMode,
     threshold,
     targetLabel,
+    screenshotError: screenshotResult.error,
     reports: reports.map((report) => ({
       ...report,
       screenshotPath: report.screenshotPath && successfulScreenshots.has(report.screenshotPath)
@@ -388,6 +594,30 @@ function queueLog(payload) {
   }, LOG_FLUSH_INTERVAL_MS);
 }
 
+function formatErrorForLog(error) {
+  if (!error) {
+    return 'Unknown error';
+  }
+
+  if (error.stack) {
+    return error.stack;
+  }
+
+  return error.message || String(error);
+}
+
+function buildCaptureErrorSummary({ file, targetLabel, targetKey, stage, error }) {
+  return {
+    program: 'capture-jmeter-report',
+    file,
+    target: targetKey,
+    targetLabel,
+    stage,
+    message: error?.message || String(error || 'Unknown error'),
+    details: formatErrorForLog(error)
+  };
+}
+
 /**
  * Initialize the runner with webContents for progress updates
  * @param {Object} mainWebContents - Main window's webContents for IPC
@@ -444,6 +674,7 @@ async function runJobs(jmeterPath, exportPath, filesConfig) {
   }, 0);
   let completedRuns = 0;
   const analysisResults = [];
+  const captureErrors = [];
 
   try {
     // Iterate through each file
@@ -596,6 +827,26 @@ async function runJobs(jmeterPath, exportPath, filesConfig) {
             targetLabel
           });
 
+          if (reportResult.screenshotError) {
+            const screenshotCaptureError = buildCaptureErrorSummary({
+              file: basename,
+              targetLabel,
+              targetKey: targetConfig.key || fileConfig.target || 'custom',
+              stage: 'screenshot',
+              error: reportResult.screenshotError
+            });
+            captureErrors.push(screenshotCaptureError);
+
+            if (hasWebContents()) {
+              queueLog({
+                fileIndex,
+                text: `capture-jmeter-report screenshot failed for ${basename} [${targetLabel}]: ${screenshotCaptureError.message}\n`,
+                isStdErr: true,
+                timestamp: new Date().toISOString()
+              });
+            }
+          }
+
           analysisResults.push({
             file: basename,
             target: targetConfig.key || fileConfig.target || 'custom',
@@ -630,10 +881,19 @@ async function runJobs(jmeterPath, exportPath, filesConfig) {
             });
           }
         } catch (analysisError) {
+          const captureError = buildCaptureErrorSummary({
+            file: basename,
+            targetLabel,
+            targetKey: targetConfig.key || fileConfig.target || 'custom',
+            stage: 'analysis',
+            error: analysisError
+          });
+          captureErrors.push(captureError);
+
           if (hasWebContents()) {
             queueLog({
               fileIndex,
-              text: `Report analysis failed for ${basename} [${targetLabel}]: ${analysisError.message}\n`,
+              text: `capture-jmeter-report analysis failed for ${basename} [${targetLabel}]: ${captureError.message}\n`,
               isStdErr: true,
               timestamp: new Date().toISOString()
             });
@@ -661,11 +921,12 @@ async function runJobs(jmeterPath, exportPath, filesConfig) {
     // Send completion notification
     flushQueuedLogs();
     sendIpc('job-complete', {
-      success: !shouldCancel,
+      success: !shouldCancel && captureErrors.length === 0,
       totalRuns,
       completedRuns,
       cancelled: shouldCancel,
-      reports: analysisResults
+      reports: analysisResults,
+      captureErrors
     });
 
   } catch (error) {

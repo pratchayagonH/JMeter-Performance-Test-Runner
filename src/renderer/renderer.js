@@ -586,6 +586,23 @@ function handleJobComplete(result) {
       );
     });
   }
+
+  if (Array.isArray(result.captureErrors) && result.captureErrors.length > 0) {
+    addLogEntry(`capture-jmeter-report errors (${result.captureErrors.length})`, 'error');
+    result.captureErrors.forEach((captureError) => {
+      const file = captureError.file || 'unknown file';
+      const targetLabel = captureError.targetLabel || captureError.target || null;
+      const targetInfo = targetLabel ? ` [${targetLabel}]` : '';
+      const stage = captureError.stage || 'capture';
+      const message = captureError.message || 'Unknown error';
+
+      addLogEntry(`capture-jmeter-report ${stage} failed for ${file}${targetInfo}: ${message}`, 'error');
+
+      if (captureError.details && captureError.details !== message) {
+        addLogEntry(captureError.details, 'error');
+      }
+    });
+  }
 }
 
 // Handle job errors
